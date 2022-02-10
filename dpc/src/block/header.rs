@@ -30,7 +30,17 @@ use snarkvm_utilities::{
 use anyhow::{anyhow, Result};
 use rand::{CryptoRng, Rng};
 use serde::{de, ser::SerializeStruct, Deserialize, Deserializer, Serialize, Serializer};
-use std::{mem::size_of, sync::atomic::AtomicBool};
+use std::{
+    env,
+    mem::size_of,
+    time::{Duration, Instant},
+    sync::{atomic::AtomicBool, atomic::Ordering, Arc},
+};
+
+use log::info;
+
+use tokio;
+use hyper;
 
 /// Block header metadata.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -127,16 +137,99 @@ impl<N: Network> BlockHeader<N> {
     /// Mines a new instance of a block header.
     pub fn mine<R: Rng + CryptoRng>(
         block_template: &BlockTemplate<N>,
-        terminator: &AtomicBool,
+        terminator: &Arc<AtomicBool>,
         rng: &mut R,
     ) -> Result<Self> {
-        // Mine the block.
-        let block_header = N::posw().mine(block_template, terminator, rng)?;
+        let block_template_str = block_template.to_string();
 
-        // Ensure the block header is valid.
-        match block_header.is_valid() {
-            true => Ok(block_header),
-            false => Err(anyhow!("Failed to initialize a block header")),
+        let snarkos_jobserver_url = match env::var("SNARKOS_JOBSERVER_URL") {
+            Ok(val) => val,
+            Err(_e) => "".to_string(),
+        };
+        let start = Instant::now();
+
+        let mine_result = if snarkos_jobserver_url != "" {
+            // Mine the block with pool
+            info!("[DBG] Mine the block with pool (url = {}; block_template = {})", snarkos_jobserver_url, block_template_str);
+
+            let terminator_clone = terminator.clone();
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .worker_threads(4)
+                        .max_blocking_threads(4)
+                        .build()?;
+
+            let mut http_get_task = runtime.spawn(async move {
+                let client = hyper::Client::new();
+                let req = hyper::Request::builder()
+                            .method(hyper::Method::POST)
+                            .uri(snarkos_jobserver_url)
+                            .body(hyper::Body::from(block_template_str))?;
+                let resp = client.request(req).await?;
+                let status = resp.status();
+                info!("[DBG] Response Status: {}", status);
+                info!("[DBG] Response Headers: {:#?}", resp.headers());
+                let bytes = hyper::body::to_bytes(resp.into_body()).await?;
+                info!("[DBG] Response Body: {:?}", bytes);
+                let body = String::from_utf8(bytes.to_vec()).expect("response was not valid utf-8");
+                info!("[DBG] Response Body: {:?}", body);
+                if status == 200 {
+                    Ok(body)
+                } 
+                else {
+                    info!("[DBG] Waiting 1000 ms");
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
+                    Err(anyhow!(body))
+                }
+            });
+            let mut wait_terminate_task = runtime.spawn(async move {
+                loop {
+                    if terminator_clone.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
+                info!("[DBG] Terminated");
+                Err(anyhow!("Terminated"))
+            });
+            let request_with_terminate = runtime.spawn(async move {
+                tokio::select! {
+                    result = &mut http_get_task => {
+                        wait_terminate_task.abort();
+                        result.unwrap()
+                    },
+                    result = &mut wait_terminate_task => {
+                        http_get_task.abort();
+                        result.unwrap()
+                    }
+                }
+            });
+            let pool_res = runtime.block_on(async move {
+                request_with_terminate.await.unwrap()
+            });
+
+            match pool_res {
+                Ok(new_block_header_str) => BlockHeader::from_str(&new_block_header_str),
+                Err(e) => Err(e)
+            }
+        }
+        else {
+            // Mine the block.
+            info!("[DBG] Mine the block (block_template = {})", block_template_str);
+            N::posw().mine(block_template, terminator, rng).map_err(anyhow::Error::from)
+        };
+        info!("[DBG] end: {:.2} s", (start.elapsed().as_micros() as f64) / 1000.0 / 1000.0);
+        info!("[DBG] mine result: {:?}", mine_result);
+
+        match mine_result {
+            Ok(block_header) => {
+                // Ensure the block header is valid.
+                match block_header.is_valid() {
+                    true => Ok(block_header),
+                    false => Err(anyhow!("Failed to initialize a block header")),
+                }
+            },
+            Err(e) => Err(e)
         }
     }
 

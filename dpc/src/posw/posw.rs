@@ -32,6 +32,9 @@ use snarkvm_utilities::{FromBytes, ToBytes, UniformRand};
 use chrono::Utc;
 use core::sync::atomic::AtomicBool;
 use rand::{CryptoRng, Rng};
+use rand::thread_rng;
+
+use log::info;
 
 /// A Proof of Succinct Work miner and verifier.
 #[derive(Clone)]
@@ -137,6 +140,70 @@ impl<N: Network> PoSWScheme<N> for PoSW<N> {
     }
 
     ///
+    /// Given the block template, compute a PoSW and nonce that satisfies the difficulty target.
+    ///
+    fn mine2<R: Rng + CryptoRng>(
+        &self,
+        block_template: &BlockTemplate<N>,
+        terminator: &AtomicBool,
+        rng: &mut R,
+        iteration: &mut u128,
+    ) -> Result<BlockHeader<N>, PoSWError> {
+        const MAXIMUM_MINING_DURATION: i64 = 600; // 600 seconds = 10 minutes.
+
+        // Instantiate the circuit.
+        let mut circuit = PoSWCircuit::<N>::new(block_template, UniformRand::rand(&mut thread_rng()))?;
+        
+        let mut elapsed = 0;
+
+        loop {
+            // Run one iteration of PoSW.
+            let start = std::time::Instant::now();
+            let proof = self.prove_once_unchecked(&mut circuit, block_template, terminator, rng)?;
+            elapsed = elapsed + start.elapsed().as_millis();
+            *iteration += 1;
+
+            #[cfg(debug_assertions)]
+            info!("[DBG] Block height {}: proof created using nonce {}", block_template.block_height(), circuit.nonce());
+
+            // Check if the updated block header is valid.
+            let (verify_proof, proof_difficulty) = self.verify_ret_proof_difficulty(
+                block_template.block_height(),
+                block_template.difficulty_target(),
+                &circuit.to_public_inputs(),
+                &proof,
+            );
+
+            if verify_proof {
+                // Print some data of the proof
+                if let Some(proof_difficulty_int) = proof_difficulty {
+                    let proof_weight = u128::pow(2, 64) / proof_difficulty_int as u128;
+                    let target_weight = u128::pow(2, 64) / block_template.difficulty_target() as u128;
+                    info!("[DBG] Block height {}: mined valid proof for nonce {}, target weight {}, proof weight {}", block_template.block_height(), circuit.nonce(), target_weight, proof_weight);
+                }
+
+                // Construct a block header.
+                return Ok(BlockHeader::from(
+                            block_template.previous_ledger_root(),
+                            block_template.transactions().transactions_root(),
+                            BlockHeaderMetadata::new(block_template),
+                            circuit.nonce(),proof,)?);
+            }
+
+            // Increment the iteration by one.
+            if *iteration % 4 == 0 {
+                info!("[DBG] Block height {}: {} proof(s) created {} ms on average...", block_template.block_height(), *iteration, elapsed / *iteration);
+            }
+            // Every 100 iterations, check that the miner is still within the allowed mining duration.
+            if *iteration % 100 == 0
+                && Utc::now().timestamp() >= block_template.block_timestamp() + MAXIMUM_MINING_DURATION
+            {
+                return Err(PoSWError::Message("Failed mine block in the allowed mining duration".to_string(),));
+            }
+        }
+    }
+
+    ///
     /// Given the block template, compute a PoSW proof.
     /// WARNING - This method does *not* ensure the resulting proof satisfies the difficulty target.
     ///
@@ -231,6 +298,59 @@ impl<N: Network> PoSWScheme<N> for PoSW<N> {
         }
 
         true
+    }
+
+    /// Verifies the Proof of Succinct Work against the nonce, root, and difficulty target.
+    fn verify_ret_proof_difficulty(
+        &self,
+        block_height: u32,
+        difficulty_target: u64,
+        inputs: &[N::InnerScalarField],
+        proof: &PoSWProof<N>,
+    ) -> (bool, Option<u64>) {
+        // Ensure the difficulty target is met.
+        let mut proof_difficulty: Option<u64> = None;
+        match proof.to_proof_difficulty() {
+            Ok(_proof_difficulty) => {
+                proof_difficulty = Some(_proof_difficulty);
+                if _proof_difficulty > difficulty_target {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "PoSW difficulty target is not met. Expected {}, found {}",
+                        difficulty_target, _proof_difficulty
+                    );
+                    return (false, proof_difficulty);
+                }
+            }
+            Err(error) => {
+                eprintln!("Failed to convert PoSW proof to bytes: {}", error);
+                return (false, proof_difficulty);
+            }
+        };
+
+        // TODO (raychu86): TEMPORARY - Remove this after testnet2 period.
+        // Verify blocks with the deprecated PoSW mode for blocks behind `V12_UPGRADE_BLOCK_HEIGHT`.
+        if <N as Network>::NETWORK_ID == 2 && block_height <= crate::testnet2::V12_UPGRADE_BLOCK_HEIGHT {
+            // Ensure the proof type is hiding.
+            if !proof.is_hiding() {
+                #[cfg(debug_assertions)]
+                eprintln!("[deprecated] PoSW proof for block {} should be hiding", block_height);
+                return (false, proof_difficulty);
+            }
+        }
+        // Ensure the proof type is not hiding.
+        else if proof.is_hiding() {
+            #[cfg(debug_assertions)]
+            eprintln!("PoSW proof for block {} should not be hiding", block_height);
+            return (false, proof_difficulty);
+        }
+
+        // Ensure the proof is valid under the deprecated PoSW parameters.
+        if !proof.verify(&self.verifying_key, inputs) {
+            return (false, proof_difficulty);
+        }
+
+        return (true, proof_difficulty)
     }
 }
 

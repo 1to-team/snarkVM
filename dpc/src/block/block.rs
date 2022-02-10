@@ -37,7 +37,7 @@ use std::{
     fmt,
     io::{Read, Result as IoResult, Write},
     str::FromStr,
-    sync::atomic::AtomicBool,
+    sync::{atomic::AtomicBool, Arc},
     time::Instant,
 };
 
@@ -55,7 +55,7 @@ pub struct Block<N: Network> {
 
 impl<N: Network> Block<N> {
     /// Initializes a new block.
-    pub fn mine<R: Rng + CryptoRng>(template: &BlockTemplate<N>, terminator: &AtomicBool, rng: &mut R) -> Result<Self> {
+    pub fn mine<R: Rng + CryptoRng>(template: &BlockTemplate<N>, terminator: &Arc<AtomicBool>, rng: &mut R) -> Result<Self> {
         assert!(
             !(*(template.transactions())).is_empty(),
             "Cannot create block with no transactions"
@@ -96,8 +96,9 @@ impl<N: Network> Block<N> {
             coinbase_record,
         );
 
+        let terminator = Arc::new(AtomicBool::new(false));
         // Construct the genesis block.
-        let block = Self::mine(&template, &AtomicBool::new(false), rng)?;
+        let block = Self::mine(&template, &terminator, rng)?;
 
         // Ensure the block is valid genesis block.
         match block.is_genesis() {

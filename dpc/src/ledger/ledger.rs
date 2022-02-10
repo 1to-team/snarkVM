@@ -19,7 +19,7 @@ use crate::prelude::*;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use rand::{CryptoRng, Rng};
-use std::{collections::HashMap, sync::atomic::AtomicBool};
+use std::{collections::HashMap, sync::{atomic::AtomicBool, Arc}};
 
 #[derive(Clone, Debug)]
 pub struct Ledger<N: Network> {
@@ -150,7 +150,7 @@ impl<N: Network> Ledger<N> {
         &mut self,
         recipient: Address<N>,
         is_public: bool,
-        terminator: &AtomicBool,
+        terminator: &Arc<AtomicBool>,
         rng: &mut R,
     ) -> Result<Record<N>> {
         // Prepare the new block.

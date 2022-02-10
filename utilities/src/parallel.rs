@@ -15,6 +15,7 @@
 // along with the snarkVM library. If not, see <https://www.gnu.org/licenses/>.
 
 use crate::{boxed::Box, vec::Vec};
+use std::env;
 
 pub struct ExecutionPool<'a, T> {
     #[cfg(feature = "parallel")]
@@ -71,11 +72,20 @@ impl<'a, T> Default for ExecutionPool<'a, T> {
 
 #[cfg(feature = "parallel")]
 pub fn max_available_threads() -> usize {
-    use aleo_std::Cpu;
-    let rayon_threads = rayon::current_num_threads();
-    match aleo_std::get_cpu() {
-        Cpu::Intel | Cpu::Unknown => num_cpus::get_physical().min(rayon_threads),
-        Cpu::AMD => rayon_threads,
+    let threads_num = match env::var("SNARKOS_THREADS_NUM") {
+        Ok(val) => val.parse::<usize>().unwrap(),
+        Err(_e) => 8,
+    };
+    match env::var("SNARKOS_THREADS_DEFAULT") {
+        Ok(_val) => {
+            use aleo_std::Cpu;
+            let rayon_threads = rayon::current_num_threads();
+            match aleo_std::get_cpu() {
+                Cpu::Intel | Cpu::Unknown => num_cpus::get_physical().min(rayon_threads),
+                Cpu::AMD => rayon_threads,
+            }
+        },
+        Err(_e) => threads_num,
     }
 }
 

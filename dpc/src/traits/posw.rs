@@ -46,6 +46,17 @@ pub trait PoSWScheme<N: Network>: Clone + Send + Sync {
         rng: &mut R,
     ) -> Result<BlockHeader<N>, PoSWError>;
 
+    /// Given the block template, compute a PoSW proof and nonce
+    /// such that they are under the difficulty target.
+    /// Generates randomness for each call
+    fn mine2<R: Rng + CryptoRng>(
+        &self,
+        block_template: &BlockTemplate<N>,
+        terminator: &AtomicBool,
+        rng: &mut R,
+        iteration: &mut u128,
+    ) -> Result<BlockHeader<N>, PoSWError>;
+
     ///
     /// Given the block template, compute a PoSW proof.
     /// WARNING - This method does *not* ensure the resulting proof satisfies the difficulty target.
@@ -69,4 +80,14 @@ pub trait PoSWScheme<N: Network>: Clone + Send + Sync {
         inputs: &[N::InnerScalarField],
         proof: &PoSWProof<N>,
     ) -> bool;
+
+    /// Verifies the Proof of Succinct Work against the nonce, root, and difficulty target.
+    /// Also retusn Proof Difficulty
+    fn verify_ret_proof_difficulty(
+        &self,
+        block_height: u32,
+        difficulty_target: u64,
+        inputs: &[N::InnerScalarField],
+        proof: &PoSWProof<N>,
+    ) -> (bool, Option<u64>);
 }

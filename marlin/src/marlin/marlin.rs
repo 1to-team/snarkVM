@@ -47,6 +47,9 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 use rand_core::RngCore;
+use std::thread;
+use std::time::Instant;
+use log::info;
 
 /// The Marlin proof system.
 #[derive(Clone, Debug)]
@@ -267,6 +270,9 @@ impl<
         terminator: &AtomicBool,
         zk_rng: &mut R,
     ) -> Result<Proof<TargetField, BaseField, PC>, MarlinError> {
+        info!("[DBG] [marlin] start ({:?})", thread::current().id());
+        let start = Instant::now();
+
         let prover_time = start_timer!(|| "Marlin::Prover");
         // TODO: Add check that c is in the correct mode.
 
@@ -565,6 +571,7 @@ impl<
         assert_eq!(proof.pc_proof.is_hiding(), MM::ZK);
         proof.print_size_info();
         end_timer!(prover_time);
+        info!("[DBG] [marlin] end: {:.2} s ({:?})", (start.elapsed().as_micros() as f64) / 1000.0 / 1000.0, thread::current().id());
 
         Ok(proof)
     }

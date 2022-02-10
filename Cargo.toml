@@ -33,6 +33,7 @@ members = [
   "r1cs",
   "utilities",
   "wasm", # excluded from [features], WASM contexts will typically import this crate directly
+  "mine_server",
   ".integration" # excluded from [features], for CI only
 ]
 

@@ -110,6 +110,9 @@ version = "1.8"
 default-features = false
 features = [ "const_generics", "const_new" ]
 
+[dependencies.log]
+version = "0.4"
+
 [dev-dependencies.criterion]
 version = "0.3.5"
 
